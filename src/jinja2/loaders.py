@@ -3,6 +3,7 @@ sources.
 """
 import importlib.util
 import os
+import pathlib
 import posixpath
 import sys
 import typing as t
@@ -298,9 +299,9 @@ class PackageLoader(BaseLoader):
         template_root = None
 
         if isinstance(loader, zipimport.zipimporter):
-            self._archive = loader.archive
+            self._archive = pathlib.Path(loader.archive).resolve()
             pkgdir = next(iter(spec.submodule_search_locations))  # type: ignore
-            template_root = os.path.join(pkgdir, package_path).rstrip(os.path.sep)
+            template_root = pathlib.Path(pkgdir) / package_path
         else:
             roots: t.List[str] = []
 
@@ -313,10 +314,10 @@ class PackageLoader(BaseLoader):
                 roots.append(os.path.dirname(spec.origin))
 
             for root in roots:
-                root = os.path.join(root, package_path)
+                path = pathlib.Path(root) / package_path
 
-                if os.path.isdir(root):
-                    template_root = root
+                if path.is_dir():
+                    template_root = path
                     break
 
         if template_root is None:
@@ -325,36 +326,46 @@ class PackageLoader(BaseLoader):
                 " way that PackageLoader understands."
             )
 
-        self._template_root = template_root
+        self._template_root = template_root.resolve()
 
     def get_source(
         self, environment: "Environment", template: str
     ) -> t.Tuple[str, str, t.Optional[t.Callable[[], bool]]]:
-        # Use posixpath even on Windows to avoid "drive:" or UNC
-        # segments breaking out of the search directory. Use normpath to
-        # convert Windows altsep to sep.
-        p = os.path.normpath(
-            posixpath.join(self._template_root, *split_template_path(template))
-        )
+        template_path = pathlib.Path(template)
+        p = (self._template_root / template_path).resolve()
+
+        # reject template specifiers that try to escape the root
+        if template_path.is_absolute():
+            raise TemplateNotFound(f"The template {template!r} is not a relative path.")
+        if os.path.pardir in template_path.parts:
+            raise TemplateNotFound(
+                f"The template {template!r} contains parentdir references."
+            )
+        try:
+            p.relative_to(self._template_root)
+        except Exception as e:
+            raise TemplateNotFound(
+                f"The template {template!r} is not relative to the root path."
+            ) from e
+
         up_to_date: t.Optional[t.Callable[[], bool]]
 
         if self._archive is None:
             # Package is a directory.
-            if not os.path.isfile(p):
+            if not p.is_file():
                 raise TemplateNotFound(template)
 
-            with open(p, "rb") as f:
-                source = f.read()
+            source = p.read_bytes()
 
-            mtime = os.path.getmtime(p)
+            mtime = p.stat().st_mtime
 
             def up_to_date() -> bool:
-                return os.path.isfile(p) and os.path.getmtime(p) == mtime
+                return p.is_file() and p.stat().st_mtime == mtime
 
         else:
             # Package is a zip file.
             try:
-                source = self._loader.get_data(p)  # type: ignore
+                source = self._loader.get_data(str(p))  # type: ignore
             except OSError as e:
                 raise TemplateNotFound(template) from e
 
@@ -363,21 +374,15 @@ class PackageLoader(BaseLoader):
             # date, so just report it as always current.
             up_to_date = None
 
-        return source.decode(self.encoding), p, up_to_date
+        return source.decode(self.encoding), str(p), up_to_date
 
     def list_templates(self) -> t.List[str]:
         results: t.List[str] = []
 
         if self._archive is None:
             # Package is a directory.
-            offset = len(self._template_root)
-
-            for dirpath, _, filenames in os.walk(self._template_root):
-                dirpath = dirpath[offset:].lstrip(os.path.sep)
-                results.extend(
-                    os.path.join(dirpath, name).replace(os.path.sep, "/")
-                    for name in filenames
-                )
+            for path in self._template_root.glob("**/*"):
+                results.append(path.relative_to(self._template_root).as_posix())
         else:
             if not hasattr(self._loader, "_files"):
                 raise TypeError(
@@ -386,15 +391,12 @@ class PackageLoader(BaseLoader):
                 )
 
             # Package is a zip file.
-            prefix = (
-                self._template_root[len(self._archive) :].lstrip(os.path.sep)
-                + os.path.sep
-            )
+            prefix = str(self._template_root.relative_to(self._archive)) + os.path.sep
             offset = len(prefix)
 
             for name in self._loader._files.keys():  # type: ignore
                 # Find names under the templates directory that aren't directories.
-                if name.startswith(prefix) and name[-1] != os.path.sep:
+                if name.startswith(prefix) and not name.endswith(os.path.sep):
                     results.append(name[offset:].replace(os.path.sep, "/"))
 
         results.sort()
