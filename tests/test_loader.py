@@ -460,3 +460,54 @@ def test_package_loader_with_absolute_paths(
         package_dir_loader.get_source(None, template)
     with pytest.raises(TemplateNotFound):
         package_file_loader.get_source(None, template)
+
+
+if os.name == "nt":
+
+    def _get_unc_dirname(file):
+        if file.startswith("\\\\?\\"):
+            # already a UNC path
+            path = __file__
+        elif file[1] == ":":
+            # prefix "\\?\" to construct a UNC literal path.
+            path = "\\\\?\\" + file
+        else:
+            raise Exception(f"path ({file!r}) doesn't use a recognized naming schema")
+        res = Path(path)
+        assert res.is_file()
+        return res.parent
+
+    @pytest.fixture()
+    def unc_literal_package_dir_loader(monkeypatch):
+        parent = _get_unc_dirname(__file__)
+        monkeypatch.syspath_prepend(parent)
+        return PackageLoader("res")
+
+    @pytest.fixture()
+    def unc_literal_package_file_loader(monkeypatch):
+        parent = _get_unc_dirname(__file__)
+        monkeypatch.syspath_prepend(parent / "res")
+        return PackageLoader("__init__")
+
+    @pytest.mark.parametrize(
+        ("template", "expect"), [("foo/test.html", "FOO"), ("test.html", "BAR")]
+    )
+    def test_unc_literal_package_dir_source(
+        unc_literal_package_dir_loader,
+        unc_literal_package_file_loader,
+        template,
+        expect,
+    ):
+        source, name, up_to_date = unc_literal_package_dir_loader.get_source(
+            None, template
+        )
+        assert source.rstrip() == expect
+        assert name.endswith(os.path.join(*split_template_path(template)))
+        assert up_to_date()
+
+        source, name, up_to_date = unc_literal_package_file_loader.get_source(
+            None, template
+        )
+        assert source.rstrip() == expect
+        assert name.endswith(os.path.join(*split_template_path(template)))
+        assert up_to_date()
