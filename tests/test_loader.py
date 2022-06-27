@@ -410,3 +410,53 @@ def test_pep_451_import_hook():
         assert "test.html" in package_loader.list_templates()
     finally:
         sys.meta_path[:] = before
+
+
+@pytest.mark.parametrize(
+    "template",
+    [
+        "../__init__.py",
+        "foo/../test.html",
+    ],
+)
+def test_package_loader_with_parentdir_refs(
+    package_dir_loader, package_file_loader, template
+):
+    # ensure we have an actual file there, so that the lookup
+    # doesn't just fail because the file isn't there.
+    path = Path(__file__).parent / "res" / "templates" / template
+    assert path.is_file()
+
+    with pytest.raises(TemplateNotFound):
+        package_dir_loader.get_source(None, template)
+    with pytest.raises(TemplateNotFound):
+        package_file_loader.get_source(None, template)
+
+
+if os.name == "nt":
+    _abs_paths = [
+        __file__,
+        str(Path(__file__).parent / "res" / "templates" / "test.html"),
+        "\\\\?\\" + str(Path(__file__).parent / "res" / "templates" / "test.html"),
+    ]
+
+else:
+
+    _abs_paths = [
+        __file__,
+        str(Path(__file__).parent / "res" / "templates" / "test.html"),
+    ]
+
+
+@pytest.mark.parametrize("template", _abs_paths)
+def test_package_loader_with_absolute_paths(
+    package_dir_loader, package_file_loader, template
+):
+    # ensure we have an actual file there, so that the lookup
+    # doesn't just fail because the file isn't there.
+    assert Path(template).is_file()
+
+    with pytest.raises(TemplateNotFound):
+        package_dir_loader.get_source(None, template)
+    with pytest.raises(TemplateNotFound):
+        package_file_loader.get_source(None, template)
